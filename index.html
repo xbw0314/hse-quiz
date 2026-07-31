@@ -245,19 +245,24 @@ function renderHome(){
     `<div class="stat"><b>${s.done}</b>已答题</div>
      <div class="stat"><b>${s.correct}</b>答对</div>
      <div class="stat"><b>${s.acc}</b>正确率</div>`;
-  document.getElementById('app').innerHTML = `
+  let cards = `
     <h2 style="margin-bottom:12px;font-size:17px;">选择练习模式</h2>
     <div class="mode-grid">
+      <div class="mode-card" onclick="startQuiz('exam',false)" style="border-color:#f59e0b;background:#fffbeb;"><div class="icon">🏆</div><h3>模拟考试</h3><p>单选40+多选20+判断20</p><span class="count" style="background:#fef3c7;color:#b45309;">80 题</span></div>
       <div class="mode-card" onclick="startQuiz('single',false)"><div class="icon">📝</div><h3>单项选择</h3><p>四选一</p><span class="count">${DATA.single.length} 题</span></div>
       <div class="mode-card" onclick="startQuiz('multi',false)"><div class="icon">☑️</div><h3>多项选择</h3><p>勾选提交</p><span class="count">${DATA.multi.length} 题</span></div>
       <div class="mode-card" onclick="startQuiz('judge',false)"><div class="icon">⚖️</div><h3>判断题</h3><p>正确/错误</p><span class="count">${DATA.judge.length} 题</span></div>
       <div class="mode-card" onclick="startQuiz('fill',false)"><div class="icon">✍️</div><h3>填空题</h3><p>下划线填写</p><span class="count">${DATA.fill.length} 题</span></div>
-      <div class="mode-card" onclick="startQuiz('mixed',true)"><div class="icon">🎲</div><h3>随机混合</h3><p>抽20题小测</p><span class="count">20 题</span></div>
-      <div class="mode-card" onclick="startQuiz('wrong',false)"><div class="icon">🔁</div><h3>错题重练</h3><p>只练错题</p><span class="count" id="wrongCount">${countWrong()} 题</span></div>
-    </div>
+      <div class="mode-card" onclick="startQuiz('wrong',false)"><div class="icon">🔁</div><h3>错题重练</h3><p>只练错题</p><span class="count" id="wrongCount">${countWrong()} 题</span></div>`;
+  // 许博文管理入口
+  if(currentUser === '许博文'){
+    cards += `<div class="mode-card" onclick="renderAdmin()" style="border-color:#8b5cf6;background:#faf5ff;"><div class="icon">📊</div><h3>管理面板</h3><p>查看全员练习记录</p><span class="count" style="background:#ede9fe;color:#6d28d9;">${listUsers().length} 人</span></div>`;
+  }
+  cards += `</div>
     <div style="text-align:center;margin-top:18px;">
       <button class="btn btn-ghost" onclick="resetProgress()">清空我的练习记录</button>
     </div>`;
+  document.getElementById('app').innerHTML = cards;
 }
 
 function statsSummary(){
@@ -288,14 +293,23 @@ function startQuiz(type, mixed){
     }
     if(!items.length){ alert('暂无错题，先去练习吧！'); return; }
     items = shuffle(items);
-  } else if(type === 'mixed'){
-    const pool = [];
-    ['single','multi','judge','fill'].forEach(t => DATA[t].forEach((_,i)=>pool.push({type:t, idx:i})));
-    items = shuffle(pool).slice(0, 20);
+  } else if(type === 'mixed' || type === 'exam'){
+    // exam: 1-40 随机单选, 41-60 随机多选, 61-80 随机判断
+    // mixed(保留兼容): 随机混合各题型
+    if(type === 'exam'){
+      const s = shuffle(DATA.single.map((_,i)=>({type:'single', idx:i}))).slice(0, 40);
+      const m = shuffle(DATA.multi.map((_,i)=>({type:'multi', idx:i}))).slice(0, 20);
+      const j = shuffle(DATA.judge.map((_,i)=>({type:'judge', idx:i}))).slice(0, 20);
+      items = [...s, ...m, ...j];
+    } else {
+      const pool = [];
+      ['single','multi','judge','fill'].forEach(t => DATA[t].forEach((_,i)=>pool.push({type:t, idx:i})));
+      items = shuffle(pool).slice(0, 20);
+    }
   } else {
     items = DATA[type].map((_,i)=>({type, idx:i}));
   }
-  session = { items, pos:0, correctCount:0, wrongList:[], answered:false };
+  session = { items, pos:0, correctCount:0, wrongList:[], answered:false, examMode:(type === 'exam') };
   renderQuestion();
 }
 
@@ -310,8 +324,16 @@ function renderQuestion(){
       <button class="btn btn-ghost" onclick="renderHome()">← 返回</button>
       <span class="progress-text">${TYPE_EMOJI[cur.type]} 第 ${session.pos+1}/${total} 题 · 已对 ${session.correctCount}</span>
     </div>
-    <div class="progress-wrap"><div class="progress-bar" style="width:${prog}%"></div></div>
-    <span class="q-type">${TYPE_NAMES[cur.type]}</span>`;
+    <div class="progress-wrap"><div class="progress-bar" style="width:${prog}%"></div></div>`;
+
+  // 模拟考试分段标题
+  if(session.examMode){
+    if(session.pos === 0) body += '<div style="text-align:center;padding:14px 0 8px;color:#0f3d7a;font-size:17px;font-weight:700;border-bottom:2px solid #2563eb;margin-bottom:14px;">📝 一、单项选择题 （第 1-40 题）</div>';
+    else if(session.pos === 40) body += '<div style="text-align:center;padding:14px 0 8px;color:#0f3d7a;font-size:17px;font-weight:700;border-bottom:2px solid #2563eb;margin-bottom:14px;">☑️ 二、多项选择题 （第 41-60 题）</div>';
+    else if(session.pos === 60) body += '<div style="text-align:center;padding:14px 0 8px;color:#0f3d7a;font-size:17px;font-weight:700;border-bottom:2px solid #2563eb;margin-bottom:14px;">⚖️ 三、判断题 （第 61-80 题）</div>';
+  }
+
+  body += `<span class="q-type">${TYPE_NAMES[cur.type]}</span>`;
 
   if(cur.type === 'fill'){
     body += renderFillBody(item);
@@ -543,8 +565,83 @@ function renderResult(){
 }
 function retrySessionWrong(){
   const items = shuffle(session.wrongList.slice());
-  session = { items, pos:0, correctCount:0, wrongList:[], answered:false };
+  session = { items, pos:0, correctCount:0, wrongList:[], answered:false, examMode:false };
   renderQuestion();
+}
+
+/* ============ 管理面板（许博文专属） ============ */
+function renderAdmin(){
+  if(currentUser !== '许博文'){ renderHome(); return; }
+  session = null;
+  updateUserBar();
+  document.getElementById('statsBar').innerHTML = '';
+  const users = listUsers();
+  let rows = '';
+  let totalDone = 0, totalCorrect = 0;
+  for(const u of users){
+    const s = loadStore(u);
+    let d = 0, c = 0;
+    for(const k in s){ if(s[k] && s[k].done){ d++; if(s[k].ok) c++; } }
+    totalDone += d; totalCorrect += c;
+    const acc = d ? Math.round(c/d*100)+'%' : '—';
+    const last = lastActivity(s);
+    rows += `<tr style="border-bottom:1px solid #e5e7eb;cursor:pointer;" onclick="viewUserDetail('${esc(u)}')">
+      <td style="padding:10px;font-weight:600;">${esc(u)}</td>
+      <td style="padding:10px;text-align:center;">${d}</td>
+      <td style="padding:10px;text-align:center;">${c}</td>
+      <td style="padding:10px;text-align:center;color:${d&&acc!=='—'?(c/d>=0.6?'#16a34a':'#dc2626'):'#6b7280'};">${acc}</td>
+      <td style="padding:10px;text-align:center;font-size:12px;color:#9ca3af;">${last}</td>
+    </tr>`;
+  }
+  document.getElementById('app').innerHTML = `
+    <div class="toolbar"><button class="btn btn-ghost" onclick="renderHome()">← 返回首页</button>
+      <span style="color:#6b7280;font-size:13px;">总答题 ${totalDone} · 总答对 ${totalCorrect}</span>
+    </div>
+    <h2 style="margin-bottom:12px;font-size:17px;">📊 全员练习记录</h2>
+    <p style="font-size:12px;color:#9ca3af;margin-bottom:12px;">记录存储在各自设备的浏览器中，仅显示当前设备上的用户数据。点击姓名查看详细记录。</p>
+    <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:14px;">
+      <thead><tr style="background:#f8fafc;text-align:left;color:#6b7280;font-size:12px;">
+        <th style="padding:8px 10px;">姓名</th><th style="padding:8px 10px;text-align:center;">已答题</th>
+        <th style="padding:8px 10px;text-align:center;">答对</th><th style="padding:8px 10px;text-align:center;">正确率</th>
+        <th style="padding:8px 10px;text-align:center;">最近活动</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  window.scrollTo(0, 0);
+}
+function lastActivity(s){
+  let max = 0;
+  for(const k in s){ if(s[k] && s[k].ts && s[k].ts > max) max = s[k].ts; }
+  if(!max) return '无记录';
+  const d = new Date(max);
+  return d.getMonth()+1+'/'+d.getDate()+' '+d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');
+}
+function viewUserDetail(name){
+  const s = loadStore(name);
+  let items = '';
+  const keys = Object.keys(s).sort((a,b)=>(s[b].ts||0)-(s[a].ts||0));
+  if(!keys.length) items = '<p style="color:#9ca3af;">暂无练习记录</p>';
+  else {
+    for(const k of keys){
+      const v = s[k];
+      if(!v.done) continue;
+      const [t, idx] = k.split('_');
+      const typeName = TYPE_NAMES[t] || t;
+      const icon = v.ok ? '✅' : '❌';
+      let qText = '';
+      if(t==='fill'){ qText = (DATA[t][+idx]||{}).full || '—'; }
+      else { qText = (DATA[t] && DATA[t][+idx]) ? DATA[t][+idx].q : '—'; }
+      const time = v.ts ? new Date(v.ts).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+      items += `<div style="border:1px solid ${v.ok?'#d1fae5':'#fee2e2'};background:${v.ok?'#f0fdf4':'#fef2f2'};border-radius:6px;padding:8px 12px;margin-bottom:6px;font-size:13px;">
+        ${icon} 【${typeName}】${esc(qText).substring(0, 80)}${qText&&qText.length>80?'...':''} <span style="color:#9ca3af;font-size:11px;float:right;">${time}</span></div>`;
+    }
+  }
+  document.getElementById('app').innerHTML = `
+    <div class="toolbar"><button class="btn btn-ghost" onclick="renderAdmin()">← 返回列表</button>
+      <span style="font-size:14px;font-weight:600;">${esc(name)} 的答题详情</span></div>
+    ${items}`;
+  window.scrollTo(0, 0);
 }
 
 document.addEventListener('keydown', function(e){
