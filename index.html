@@ -134,6 +134,20 @@ const SUMMARY_PATH = GH_API + '/_summary.json';
 const CACHE_KEY = 'hse_admin_cache';
 const CACHE_TTL = 5 * 60 * 1000; // 5分钟
 
+// base64 → UTF-8 字符串（修复中文乱码）
+function b64decodeUtf8(b64){
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  return new TextDecoder('utf-8').decode(bytes);
+}
+function b64encodeUtf8(str){
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  for(let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
 // 读取汇总（带缓存，1次请求）
 async function loadSummary(force){
   const cached = localStorage.getItem(CACHE_KEY);
@@ -148,7 +162,7 @@ async function loadSummary(force){
     if(!r.ok) return null;
     const d = await r.json();
     let buf = d;
-    if(d.content){ try { buf = JSON.parse(atob(d.content)); } catch(e){ console.error('parse err:',e); return null; } }
+    if(d.content){ try { buf = JSON.parse(b64decodeUtf8(d.content)); } catch(e){ console.error('parse err:',e); return null; } }
     // 统一返回格式: { users: { 姓名: {done,correct,...}, ... } }
     const users = buf.users || buf;
     const data = (users && typeof users === 'object' && !Array.isArray(users)) ? users : {};
@@ -163,7 +177,7 @@ async function uploadToGitHub(){
   const s = statsSummary();
   // 1) 上传个人 JSON
   const userData = {user:currentUser,totalDone:s.done,totalCorrect:s.correct,accuracy:s.acc,lastActive:new Date().toISOString(),records:store};
-  const userContent = btoa(unescape(encodeURIComponent(JSON.stringify(userData))));
+  const userContent = b64encodeUtf8(JSON.stringify(userData));
   const userPath = GH_API + '/' + encodeURIComponent(currentUser) + '.json';
 
   let ok1 = false;
@@ -183,13 +197,13 @@ async function uploadToGitHub(){
     let shaS = null;
     if(g.ok){
       const d = await g.json();
-      if(d.content) summary = JSON.parse(atob(d.content));
+      if(d.content) summary = JSON.parse(b64decodeUtf8(d.content));
       shaS = d.sha;
     }
     const entry = {done:s.done,correct:s.correct,acc:s.acc,last:new Date().toISOString()};
     summary.users[currentUser] = entry;
     summary._updated = new Date().toISOString();
-    const sumContent = btoa(unescape(encodeURIComponent(JSON.stringify(summary))));
+    const sumContent = b64encodeUtf8(JSON.stringify(summary));
     const bodyS = {message:'Summary update', content:sumContent, branch:'main'};
     if(shaS) bodyS.sha = shaS;
     await fetch(SUMMARY_PATH, {method:'PUT', headers:GH_HDR, body:JSON.stringify(bodyS)});
@@ -208,7 +222,7 @@ async function loadUserDetail(name){
   // 退回到 API
   try {
     const r = await fetch(GH_API + '/' + encodeURIComponent(name) + '.json', {headers:GH_HDR});
-    if(r.ok){ const d = await r.json(); return JSON.parse(atob(d.content)); }
+    if(r.ok){ const d = await r.json(); return JSON.parse(b64decodeUtf8(d.content)); }
   } catch(e){}
   return null;
 }
