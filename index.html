@@ -147,8 +147,11 @@ async function loadSummary(force){
     const r = await fetch(SUMMARY_PATH, {headers:GH_HDR, cache:'no-store'});
     if(!r.ok) return null;
     const d = await r.json();
-    const buf = d.content ? JSON.parse(atob(d.content)) : d; // encoded or raw
-    const data = buf.users || buf;
+    let buf = d;
+    if(d.content){ try { buf = JSON.parse(atob(d.content)); } catch(e){ console.error('parse err:',e); return null; } }
+    // 统一返回格式: { users: { 姓名: {done,correct,...}, ... } }
+    const users = buf.users || buf;
+    const data = (users && typeof users === 'object' && !Array.isArray(users)) ? users : {};
     localStorage.setItem(CACHE_KEY, JSON.stringify({ts:Date.now(), data}));
     return data;
   } catch(e){ console.error('loadSummary err:', e); return null; }
@@ -314,11 +317,14 @@ function drawQR(canvas, text, size){
 
 /* 上报成绩 */
 async function doUpload(){
+  const s = statsSummary();
+  if(!confirm('「'+currentUser+'」当前练习记录：\n已答 '+s.done+' 题 · 答对 '+s.correct+' 题 · 正确率 '+s.acc+'\n\n确认上报到云端？')) return;
   const btn = event.target;
   btn.disabled = true; btn.textContent = '上报中...';
   const ok = await uploadToGitHub();
   btn.disabled = false; btn.textContent = '📤 上报成绩';
-  if(ok) showOverlayMsg('✅ 上报成功！许博文可在管理面板查看。');
+  localStorage.removeItem(CACHE_KEY);
+  if(ok) showOverlayMsg('✅ 上报成功！（已答 '+s.done+' 题）管理面板可查看。');
   else showOverlayMsg('❌ 上报失败，请检查网络后重试。');
 }
 function showOverlayMsg(msg){
@@ -685,8 +691,9 @@ async function renderAdmin(forceRefresh){
   let source = '（云端汇总 · 5分钟内缓存）';
   let usersArr = [];
 
-  if(summary && summary.users){
-    for(const [name, u] of Object.entries(summary.users)){
+  if(summary){
+    for(const [name, u] of Object.entries(summary)){
+      if(name.startsWith('_')) continue; // 跳过元数据字段
       usersArr.push({user:name, totalDone:u.done||0, totalCorrect:u.correct||0, accuracy:u.acc||'—', lastActive:u.last||null});
     }
     usersArr.sort((a,b) => (b.totalDone||0) - (a.totalDone||0));
