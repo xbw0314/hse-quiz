@@ -130,53 +130,84 @@ const GH_TOKEN = ['ghp_','HLS7hblc5dozdhRZr','9qBlv98p0SFLY1Y45Ht'].join('');
 const GH_API = 'https://api.github.com/repos/XBW0314/hse-quiz-reports/contents/reports';
 const GH_RAW = 'https://raw.githubusercontent.com/XBW0314/hse-quiz-reports/main/reports/';
 const GH_HDR = {'Authorization':'token '+GH_TOKEN,'Accept':'application/vnd.github+json'};
+const SUMMARY_PATH = GH_API + '/_summary.json';
+const CACHE_KEY = 'hse_admin_cache';
+const CACHE_TTL = 5 * 60 * 1000; // 5分钟
 
-// 上传当前用户的练习记录到 GitHub
-async function uploadToGitHub(){
-  if(!currentUser) return;
-  const data = {
-    user: currentUser,
-    totalDone: statsSummary().done,
-    totalCorrect: statsSummary().correct,
-    accuracy: statsSummary().acc,
-    lastActive: new Date().toISOString(),
-    records: store
-  };
-  const content = btoa(unescape(encodeURIComponent(JSON.stringify(data,null,2))));
-  const path = GH_API + encodeURIComponent(currentUser) + '.json';
+// 读取汇总（带缓存，1次请求）
+async function loadSummary(force){
+  const cached = localStorage.getItem(CACHE_KEY);
+  if(!force && cached){
+    try {
+      const c = JSON.parse(cached);
+      if(Date.now() - c.ts < CACHE_TTL) return c.data;
+    } catch(e){}
+  }
   try {
-    // 先查是否已存在
-    const get = await fetch(path, {headers:GH_HDR});
-    let sha = null;
-    if(get.ok){ const d = await get.json(); sha = d.sha; }
-    const body = {message:'Report: '+currentUser, content:content, branch:'main'};
-    if(sha) body.sha = sha;
-    const put = await fetch(path, {method:'PUT', headers:GH_HDR, body:JSON.stringify(body)});
-    if(put.ok) return true;
-    console.error('Upload failed:', put.status);
-    return false;
-  } catch(e){ console.error(e); return false; }
+    const r = await fetch(SUMMARY_PATH, {headers:GH_HDR, cache:'no-store'});
+    if(!r.ok) return null;
+    const d = await r.json();
+    const buf = d.content ? JSON.parse(atob(d.content)) : d; // encoded or raw
+    const data = buf.users || buf;
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ts:Date.now(), data}));
+    return data;
+  } catch(e){ console.error('loadSummary err:', e); return null; }
 }
 
-// 从 GitHub 读取所有用户报告列表
-async function fetchAllReports(){
+// 上传个人记录 + 更新汇总
+async function uploadToGitHub(){
+  if(!currentUser) return;
+  const s = statsSummary();
+  // 1) 上传个人 JSON
+  const userData = {user:currentUser,totalDone:s.done,totalCorrect:s.correct,accuracy:s.acc,lastActive:new Date().toISOString(),records:store};
+  const userContent = btoa(unescape(encodeURIComponent(JSON.stringify(userData))));
+  const userPath = GH_API + '/' + encodeURIComponent(currentUser) + '.json';
+
+  let ok1 = false;
   try {
-    const r = await fetch(GH_API, {headers:GH_HDR, cache:'no-store'});
-    if(!r.ok) return [];
-    const files = await r.json();
-    const users = [];
-    for(const f of files){
-      if(f.name.endsWith('.json')){
-        const raw = await fetch(GH_RAW + f.name, {cache:'no-store'});
-        if(raw.ok){
-          const d = await raw.json();
-          d._fileName = f.name;
-          users.push(d);
-        }
-      }
+    const g = await fetch(userPath, {headers:GH_HDR});
+    let shaU = g.ok ? (await g.json()).sha : null;
+    const bodyU = {message:'Report:'+currentUser, content:userContent, branch:'main'};
+    if(shaU) bodyU.sha = shaU;
+    const p = await fetch(userPath, {method:'PUT', headers:GH_HDR, body:JSON.stringify(bodyU)});
+    ok1 = p.ok;
+  } catch(e){ console.error(e); }
+
+  // 2) 更新汇总文件
+  try {
+    const g = await fetch(SUMMARY_PATH, {headers:GH_HDR});
+    let summary = {users:{}};
+    let shaS = null;
+    if(g.ok){
+      const d = await g.json();
+      if(d.content) summary = JSON.parse(atob(d.content));
+      shaS = d.sha;
     }
-    return users;
-  } catch(e){ console.error(e); return []; }
+    const entry = {done:s.done,correct:s.correct,acc:s.acc,last:new Date().toISOString()};
+    summary.users[currentUser] = entry;
+    summary._updated = new Date().toISOString();
+    const sumContent = btoa(unescape(encodeURIComponent(JSON.stringify(summary))));
+    const bodyS = {message:'Summary update', content:sumContent, branch:'main'};
+    if(shaS) bodyS.sha = shaS;
+    await fetch(SUMMARY_PATH, {method:'PUT', headers:GH_HDR, body:JSON.stringify(bodyS)});
+    localStorage.removeItem(CACHE_KEY); // 清除缓存
+  } catch(e){ console.error('summary update err:', e); }
+
+  return ok1;
+}
+
+// 读取某个用户的详细记录
+async function loadUserDetail(name){
+  try {
+    const r = await fetch(GH_RAW + '/' + encodeURIComponent(name) + '.json', {cache:'no-store'});
+    if(r.ok) return await r.json();
+  } catch(e){}
+  // 退回到 API
+  try {
+    const r = await fetch(GH_API + '/' + encodeURIComponent(name) + '.json', {headers:GH_HDR});
+    if(r.ok){ const d = await r.json(); return JSON.parse(atob(d.content)); }
+  } catch(e){}
+  return null;
 }
 
 /* ============ 用户管理 ============ */
@@ -643,48 +674,48 @@ function retrySessionWrong(){
 }
 
 /* ============ 管理面板（许博文专属） ============ */
-async function renderAdmin(){
+async function renderAdmin(forceRefresh){
   if(currentUser !== '许博文'){ renderHome(); return; }
   session = null;
   updateUserBar();
   document.getElementById('statsBar').innerHTML = '';
   document.getElementById('app').innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">⏳ 正在从云端加载数据...</div>';
 
-  // 优先从 GitHub 读取，失败则退回到本地 localStorage
-  let users = await fetchAllReports();
-  let source = '（云端数据）';
-  if(!users.length){
-    // 退回到本地
-    const localUsers = listUsers();
-    users = localUsers.map(u => {
-      const s = loadStore(u);
-      let d=0,c=0;
-      for(const k in s){ if(s[k]&&s[k].done){ d++; if(s[k].ok) c++; } }
-      return { user: u, totalDone: d, totalCorrect: c, accuracy: d?Math.round(c/d*100)+'%':'—', lastActive: lastActivity(s), records: s };
-    });
-    source = '（本地数据 · 请引导用户点击「📤 上报成绩」同步到云端）';
+  let summary = await loadSummary(forceRefresh);
+  let source = '（云端汇总 · 5分钟内缓存）';
+  let usersArr = [];
+
+  if(summary && summary.users){
+    for(const [name, u] of Object.entries(summary.users)){
+      usersArr.push({user:name, totalDone:u.done||0, totalCorrect:u.correct||0, accuracy:u.acc||'—', lastActive:u.last||null});
+    }
+    usersArr.sort((a,b) => (b.totalDone||0) - (a.totalDone||0));
+  }
+  if(!usersArr.length){
+    // 回退本地
+    const local = listUsers().map(u => { const s=loadStore(u); let d=0,c=0; for(const k in s){ if(s[k]&&s[k].done){ d++; if(s[k].ok)c++; } } return {user:u,totalDone:d,totalCorrect:c,accuracy:d?Math.round(c/d*100)+'%':'—',lastActive:lastActivity(s),records:s}; });
+    usersArr = local;
+    source = forceRefresh ? '（暂未有人上报，显示本地数据）' : '（云端无数据/网络异常，显示本地数据）';
   }
 
-  let rows = '';
-  let totalDone = 0, totalCorrect = 0;
-  for(const u of users){
-    totalDone += (u.totalDone||0); totalCorrect += (u.totalCorrect||0);
-    const acc = u.accuracy || (u.totalDone ? Math.round(u.totalCorrect/u.totalDone*100)+'%' : '—');
-    const last = u.lastActive || '—';
+  let rows='', totalDone=0, totalCorrect=0;
+  for(const u of usersArr){
+    totalDone+=(u.totalDone||0); totalCorrect+=(u.totalCorrect||0);
+    const acc = u.accuracy || (u.totalDone?Math.round(u.totalCorrect/u.totalDone*100)+'%':'—');
     rows += `<tr style="border-bottom:1px solid #e5e7eb;cursor:pointer;" onclick="viewUserCloud('${esc(u.user)}')">
       <td style="padding:10px;font-weight:600;">${esc(u.user)}</td>
       <td style="padding:10px;text-align:center;">${u.totalDone||0}</td>
       <td style="padding:10px;text-align:center;">${u.totalCorrect||0}</td>
       <td style="padding:10px;text-align:center;color:${u.totalDone&&u.totalCorrect/u.totalDone>=0.6?'#16a34a':'#dc2626'};">${acc}</td>
-      <td style="padding:10px;text-align:center;font-size:12px;color:#9ca3af;">${typeof last==='string'?last:fmtTime(last)}</td>
+      <td style="padding:10px;text-align:center;font-size:12px;color:#9ca3af;">${u.lastActive?fmtTime(u.lastActive):'—'}</td>
     </tr>`;
   }
   document.getElementById('app').innerHTML = `
     <div class="toolbar"><button class="btn btn-ghost" onclick="renderHome()">← 返回首页</button>
-      <span style="color:#6b7280;font-size:13px;">${users.length} 人 · 总答题 ${totalDone} · 总答对 ${totalCorrect} ${source}</span>
+      <span style="color:#6b7280;font-size:13px;">${usersArr.length} 人 · 总答题 ${totalDone} · 总答对 ${totalCorrect} ${source}</span>
     </div>
     <h2 style="margin-bottom:6px;font-size:17px;">📊 全员练习记录</h2>
-    <p style="font-size:12px;color:#9ca3af;margin-bottom:12px;">数据来源：GitHub 仓库 · 点击姓名查看详细记录 · 每人需在自己的设备上点击「📤 上报成绩」同步</p>
+    <p style="font-size:12px;color:#9ca3af;margin-bottom:12px;">点击姓名查看详细记录 · 每人需在自己设备点击「📤 上报成绩」同步</p>
     <div style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:14px;">
       <thead><tr style="background:#f8fafc;text-align:left;color:#6b7280;font-size:12px;">
@@ -695,7 +726,7 @@ async function renderAdmin(){
       <tbody>${rows}</tbody>
     </table></div>
     <div style="text-align:center;margin-top:16px;">
-      <button class="btn btn-ghost" onclick="renderAdmin()">🔄 刷新数据</button>
+      <button class="btn btn-primary" onclick="renderAdmin(true)">🔄 强制刷新（忽略缓存）</button>
     </div>`;
   window.scrollTo(0, 0);
 }
@@ -703,20 +734,14 @@ function fmtTime(ts){ if(!ts) return '—'; const d=new Date(ts); return d.getMo
 
 async function viewUserCloud(name){
   document.getElementById('app').innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">⏳ 加载中...</div>';
-  // 先从 GitHub 读取
-  let userData = null;
-  try {
-    const r = await fetch(GH_RAW + encodeURIComponent(name) + '.json', {cache:'no-store'});
-    if(r.ok) userData = await r.json();
-  } catch(e){}
-  if(!userData){
-    // fallback local
+  let data = await loadUserDetail(name);
+  if(!data){
     const s = loadStore(name);
-    let d=0, c=0;
+    let d=0,c=0;
     for(const k in s){ if(s[k]&&s[k].done){ d++; if(s[k].ok) c++; } }
-    userData = { user:name, totalDone:d, totalCorrect:c, records:s };
+    data = {user:name, totalDone:d, totalCorrect:c, records:s};
   }
-  renderUserDetail(name, userData);
+  renderUserDetail(name, data);
 }
 function renderUserDetail(name, data){
   const records = data.records || {};
